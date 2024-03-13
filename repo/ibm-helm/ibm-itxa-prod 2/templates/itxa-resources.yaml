@@ -1,0 +1,103 @@
+# Licensed Materials - Property of IBM
+# IBM Transformation Extender Advanced (5724-Q23)
+# (C) Copyright IBM Corp. 2021, 2022 All Rights Reserved.
+# US Government Users Restricted Rights - Use, duplication or disclosure restricted by GSA ADP Schedule Contract with IBM Corp.
+{{- include "itxa-chart.licenseValidate" . | required "License must be accepted by setting license key to true" }}
+{{ if or .Values.global.install.itxaUI.enabled .Values.global.install.itxadbinit.enabled -}}
+{{- include "itxa-chart.serviceAccountNameValidate" .Values.global.serviceAccountName -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.global.serviceAccountName }}
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    "helm.sh/hook": "pre-install, pre-upgrade"
+    "helm.sh/hook-weight": "1"
+    "helm.sh/hook-delete-policy": "before-hook-creation"
+  labels:
+{{ include "sch.metadata.labels.standard" (list .) | indent 4 }}
+---
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: itxa-role-{{ .Release.Namespace }}
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    "helm.sh/hook": "pre-install, pre-upgrade"
+    "helm.sh/hook-weight": "1"
+    "helm.sh/hook-delete-policy": "before-hook-creation"
+  labels:
+{{ include "sch.metadata.labels.standard" (list .) | indent 4 }}
+rules:
+  - apiGroups: ['route.openshift.io']
+    resources: ['secrets','routes','routes/custom-host']
+    verbs: ['get', 'watch', 'list', 'create', 'delete', 'patch', 'update']
+  - apiGroups: ['','batch']
+    resources: ['secrets','configmaps','persistentvolumes','persistentvolumeclaims','pods','services','cronjobs','jobs']
+    verbs: ['get', 'list', 'delete', 'create', 'update', 'patch']  
+
+---
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: itxa-rolebinding-{{ .Release.Namespace }}
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    "helm.sh/hook": "pre-install, pre-upgrade"
+    "helm.sh/hook-weight": "1"
+    "helm.sh/hook-delete-policy": "before-hook-creation"
+  labels:
+{{ include "sch.metadata.labels.standard" (list .) | indent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.global.serviceAccountName }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: itxa-role-{{ .Release.Namespace }}
+  apiGroup: rbac.authorization.k8s.io
+  
+---
+{{- $pvcname := .Values.global.persistence.appLogsPVC.name -}}
+{{- $resourceexist := (empty (lookup "v1" "PersistentVolumeClaim" .Release.Namespace $pvcname)) | ternary "false" "true"  }}
+{{ if (eq $resourceexist "false") }}
+
+# create a persistance volume claim for logs
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $pvcname }}
+  annotations:
+        # This is what defines this resource as a hook. Without this line, the
+        # job is considered part of the release.
+        "helm.sh/hook": "pre-install, pre-upgrade"
+        "helm.sh/hook-weight": "1"
+        "helm.sh/hook-delete-policy": "before-hook-creation"
+  labels:
+{{ include "sch.metadata.labels.standard" (list .) | indent 4 }}         
+spec:
+  {{- if $.Values.global.persistence.useDynamicProvisioning }}
+  # if present, use the storageClassName from the values.yaml, else use the
+  # default storageClass setup by kube Administrator
+  # setting storageClassName to nil means use the default storage class
+  storageClassName: {{ default nil .Values.global.persistence.storageClassName | quote }}
+  {{- else }}
+  # bind to an existing pv.
+  # setting storageClassName to "" disables dynamic provisioning 
+  storageClassName: {{ default "" .Values.global.persistence.storageClassName | quote }}
+  {{- if and (.Values.global.persistence.appLogsPVC.selector) (.Values.global.persistence.appLogsPVC.selector.label) }}
+  # use selectors in the binding process
+  selector:
+    matchExpressions:
+      - {key: {{ .Values.global.persistence.appLogsPVC.selector.label }}, operator: In, values: [{{ .Values.global.persistence.appLogsPVC.selector.value }}]}
+  {{- end }}      
+  {{- end }}
+  accessModes: [ {{ .Values.global.persistence.appLogsPVC.accessMode | quote }} ]
+  resources:
+    requests:
+      storage: {{ .Values.global.persistence.appLogsPVC.requestSize | quote }}
+{{- end }}
+
+{{ end }}

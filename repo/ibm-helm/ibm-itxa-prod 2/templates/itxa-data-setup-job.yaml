@@ -1,0 +1,143 @@
+# Licensed Materials - Property of IBM
+# IBM Transformation Extender Advanced (5724-Q23)
+# (C) Copyright IBM Corp. 2021, 2022 All Rights Reserved.
+# US Government Users Restricted Rights - Use, duplication or disclosure restricted by GSA ADP Schedule Contract with IBM Corp.
+{{- include "itxa-chart.licenseValidate" . | required "License must be accepted by setting license key to true" }}
+{{ if .Values.global.install.itxadbinit.enabled -}}
+{{- if and (.Values.itxadatasetup.loadFactoryData) (eq .Values.itxadatasetup.loadFactoryData "install") }}
+{{- include "sch.config.init" (list . "itxa-chart.sch.chart.config.values") }}
+{{- $dbType := .Values.itxadatasetup.dbType }}
+{{- $deployEDIPack := .Values.itxadatasetup.deployPacks.edi }}
+{{- $deployFSPPack := .Values.itxadatasetup.deployPacks.fsp }}
+{{- $deployHCPack := .Values.itxadatasetup.deployPacks.hc }}
+{{- $tenantId := .Values.itxadatasetup.tenantId }}
+{{- $ignoreVersionWarning := .Values.itxadatasetup.ignoreVersionWarning }}
+{{- $s3host := .Values.global.database.s3host }}
+{{- $bucket := .Values.global.database.s3bucket }}
+{{- $dbvendor := .Values.global.database.dbvendor }}
+{{- $secureDBConnection := .Values.global.secureDBConnection.enabled }}                
+{{- $logPVCName := .Values.global.persistence.appLogsPVC.name }} 
+{{- $oracleUseServiceName := .Values.global.database.oracleUseServiceName }} 
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ template "itxa-chart.fullname" . }}-itxadatasetup
+  labels:
+{{ include "sch.metadata.labels.standard" (list .) | indent 4 }}
+spec:
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+{{ include "sch.metadata.labels.standard" (list .) | indent 8 }}
+      annotations:
+{{- include "sch.metadata.annotations.metering" (list . .sch.chart.metering) | indent 8 }}
+    spec:
+      affinity:
+{{- include "itxa-chart.nodeaffinity.onlyArch" . | indent 8 }}
+      serviceAccountName: {{ .Values.global.serviceAccountName | default "default" }}
+      hostNetwork: false
+      hostPID: false
+      hostIPC: false
+      securityContext:
+        runAsNonRoot: true
+        {{- if not (.Capabilities.APIVersions.Has "security.openshift.io/v1") }}
+        runAsUser: {{ .Values.itxadbinit.runAsUser }}
+        fsGroup: {{ .Values.global.persistence.securityContext.fsGroup | default 0 }}
+        {{- else }}
+        supplementalGroups: [{{ .Values.global.persistence.securityContext.supplementalGroup | default 0 }}]
+        {{- end }}
+      restartPolicy: "Never"
+      {{- if .Values.global.image.pullsecret }}
+      imagePullSecrets:
+      - name: {{ .Values.global.image.pullsecret }}
+      {{- end }}
+      {{- if .Values.global.resourcesInit.enabled }}
+      initContainers:
+      - name: "resources-init" 
+        image: >-
+              {{- if .Values.global.resourcesInit.image.digest }}
+              {{ regexReplaceAll "(^cp\\.(stg\\.)?icr\\.io/)" .Values.global.image.repository "${1}cp/" }}/{{ .Values.global.resourcesInit.image.name }}@{{ .Values.global.resourcesInit.image.digest }}
+              {{- else }}
+              {{ regexReplaceAll "(^cp\\.(stg\\.)?icr\\.io/)" .Values.global.image.repository "${1}cp/" }}/{{ .Values.global.resourcesInit.image.name }}:{{ .Values.global.resourcesInit.image.tag }}
+              {{- end }}
+        imagePullPolicy: {{ .Values.global.resourcesInit.image.pullPolicy }}
+        securityContext:
+          privileged: false
+          runAsNonRoot: true
+          {{- if not (.Capabilities.APIVersions.Has "security.openshift.io/v1") }}
+          runAsUser: {{ .Values.itxadbinit.runAsUser }}
+          {{- end }}
+          readOnlyRootFilesystem: false
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        command: ["/bin/bash", "-c"]
+        args:
+        - "mkdir -p /ibm/resources && cp -rv /resources/* /ibm/resources"
+        volumeMounts:
+        -  name: resourcesdir
+           mountPath: "/ibm/resources" 
+      {{- end }}     
+      containers:
+        - name: {{ template "itxa-chart.fullname" . }}-itxadatasetup
+          image: >-
+              {{- if .Values.itxadbinit.image.digest }}
+              {{ regexReplaceAll "(^cp\\.(stg\\.)?icr\\.io/)" .Values.global.image.repository "${1}cp/" }}/{{ .Values.itxadbinit.image.name }}@{{ .Values.itxadbinit.image.digest }}
+              {{- else }}
+              {{ regexReplaceAll "(^cp\\.(stg\\.)?icr\\.io/)" .Values.global.image.repository "${1}cp/" }}/{{ .Values.itxadbinit.image.name }}:{{ .Values.itxadbinit.image.tag }}
+              {{- end }}
+          imagePullPolicy: {{ .Values.itxadbinit.image.pullPolicy }}
+          securityContext:
+            privileged: false
+            runAsNonRoot: true
+            {{- if not (.Capabilities.APIVersions.Has "security.openshift.io/v1") }}
+            runAsUser: {{ .Values.itxadbinit.runAsUser }}
+            {{- end }}
+            readOnlyRootFilesystem: false
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+          command: ["/bin/bash", "-c"]
+          {{- if .Values.global.resourcesInit.enabled }}
+          args:
+          - "/opt/IBM/$SPE_VERSION/bin/processcerts.sh && /opt/IBM/$SPE_VERSION/bin/executeAll.sh --DBTYPE={{ $dbType }} --deployEDIPack={{ $deployEDIPack }} --deployFSPPack={{ $deployFSPPack }} --deployHCPack={{ $deployHCPack }} --tenantId={{ $tenantId }} --ignoreVersionWarning={{ $ignoreVersionWarning }} --resourcesInit=true --dbvendor={{ $dbvendor }} --secureDBConnection={{ $secureDBConnection }} --oracleUseServiceName={{ $oracleUseServiceName }} && touch /itxalogs/itxadatasetup.complete && while true; do sleep 30; done;"
+          {{- else }}
+          args:
+          - "/opt/IBM/$SPE_VERSION/bin/processcerts.sh && /opt/IBM/$SPE_VERSION/bin/executeAll.sh --DBTYPE={{ $dbType }} --deployEDIPack={{ $deployEDIPack }} --deployFSPPack={{ $deployFSPPack }} --deployHCPack={{ $deployHCPack }} --tenantId={{ $tenantId }} --ignoreVersionWarning={{ $ignoreVersionWarning }} --resourcesInit=false --s3host={{ $s3host }} --bucket={{ $bucket }} --dbvendor={{ $dbvendor }} --secureDBConnection={{ $secureDBConnection }} --oracleUseServiceName={{ $oracleUseServiceName }} && touch /itxalogs/itxadatasetup.complete && while true; do sleep 30; done;"
+          {{- end }}
+          envFrom:
+          - configMapRef:
+              name: itxa-config
+          - secretRef:
+              name: {{ .Values.global.appSecret }}
+          volumeMounts:
+                {{- if and $secureDBConnection .Values.global.secureDBConnection.dbservercertsecretname }}
+            - name: importdbservercert
+              mountPath: "/config/security/importeddbservercert"
+              readOnly: true
+                {{- end }}    
+            - name: itxadatasetuplog
+              mountPath: /itxalogs
+            {{- if .Values.global.resourcesInit.enabled}}  
+            - name: resourcesdir
+              mountPath: "/ibm/resources"
+            {{- end }}  
+      volumes:   
+            {{- if and $secureDBConnection .Values.global.secureDBConnection.dbservercertsecretname }}
+        - name: importdbservercert
+          secret:
+            secretName: {{ .Values.global.secureDBConnection.dbservercertsecretname }}
+            {{- end }}
+              
+        - name: itxadatasetuplog
+          persistentVolumeClaim:
+            claimName: {{ $logPVCName }}
+        {{- if .Values.global.resourcesInit.enabled}}    
+        - name: resourcesdir
+          emptyDir: {}
+        {{- end }}
+{{- end }}
+{{- end }}
